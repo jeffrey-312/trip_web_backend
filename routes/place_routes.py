@@ -111,24 +111,94 @@ def get_my_favorites(user_id):
         conn.close()
 
 
-# --- 4. 點開地點看到我自己的評論 或 改寫評論 ---
+# # --- 4. 點開地點看到我自己的評論 或 改寫評論 ---
+# @place_bp.route('/users/<int:user_id>/places/<int:place_id>/review', methods=['GET', 'POST'])
+# def handle_private_review(user_id, place_id):
+#     conn = get_db_connection()
+    
+#     # --- GET: 讀取評論 ---
+#     if request.method == 'GET':
+#         cursor = conn.cursor(dictionary=True)
+#         try:
+#             # 對應 reviews 表欄位: score, comment
+#             sql = "SELECT score, comment FROM reviews WHERE Users_id = %s AND Places_id = %s"
+#             cursor.execute(sql, (user_id, place_id))
+#             review = cursor.fetchone()
+#             if not review:
+#                 review = {"score": 0, "comment": ""}
+                
+            
+#             return jsonify({"code": "200", "data": review}), 200
+#         except Exception as e:
+#             return jsonify({"code": "3003", "message": "讀取評論失敗"}), 500
+#         finally:
+#             cursor.close()
+#             conn.close()
+
+#     # --- POST: 改寫(更新或新增) 評論 ---
+#     if request.method == 'POST':
+#         data = request.json
+#         score = data.get('score')
+#         comment = data.get('comment')
+#         cursor = conn.cursor()
+#         try:
+#             # 使用 INSERT ... ON DUPLICATE KEY UPDATE 確保每人每地只有一筆
+#             sql = """
+#                 INSERT INTO reviews (Users_id, Places_id, score, comment)
+#                 VALUES (%s, %s, %s, %s)
+#                 ON DUPLICATE KEY UPDATE score=%s, comment=%s, created_at=CURRENT_TIMESTAMP
+#             """
+#             cursor.execute(sql, (user_id, place_id, score, comment, score, comment))
+#             conn.commit()
+#             return jsonify({"code": "200", "message": "個人評論已改寫成功"}), 200
+#         except Exception as e:
+#             conn.rollback()
+#             return jsonify({"code": "3004", "message": "改寫評論失敗", "error": str(e)}), 500
+#         finally:
+#             cursor.close()
+#             conn.close()
+
+# --- 4. 點開地點看到我自己的評論與全站平均分 ---
 @place_bp.route('/users/<int:user_id>/places/<int:place_id>/review', methods=['GET', 'POST'])
 def handle_private_review(user_id, place_id):
     conn = get_db_connection()
     
-    # --- GET: 讀取評論 ---
+    # --- GET: 讀取個人評論與平均分數 ---
     if request.method == 'GET':
         cursor = conn.cursor(dictionary=True)
         try:
-            # 對應 reviews 表欄位: score, comment
-            sql = "SELECT score, comment FROM reviews WHERE Users_id = %s AND Places_id = %s"
-            cursor.execute(sql, (user_id, place_id))
-            review = cursor.fetchone()
-            if not review:
-                review = {"score": 0, "comment": ""}
-            return jsonify({"code": "200", "data": review}), 200
+            # 1. 取得該使用者的個人評論
+            sql_user = "SELECT score, comment FROM reviews WHERE Users_id = %s AND Places_id = %s"
+            cursor.execute(sql_user, (user_id, place_id))
+            user_review = cursor.fetchone()
+            
+            # 若無評論則給予預設值
+            if not user_review:
+                user_review = {"score": 0, "comment": ""}
+
+            # 2. 計算該地點的平均分數與總評論數
+            sql_avg = """
+                SELECT 
+                    ROUND(AVG(score), 1) AS average_score, 
+                    COUNT(id) AS total_reviews 
+                FROM reviews 
+                WHERE Places_id = %s
+            """
+            cursor.execute(sql_avg, (place_id,))
+            global_stat = cursor.fetchone()
+
+            return jsonify({
+                "code": "200", 
+                "data": {
+                    "my_review": user_review,
+                    "global_stat": {
+                        "average_score": float(global_stat['average_score']) if global_stat['average_score'] else 0.0,
+                        "total_reviews": global_stat['total_reviews']
+                    }
+                }
+            }), 200
         except Exception as e:
-            return jsonify({"code": "3003", "message": "讀取評論失敗"}), 500
+            return jsonify({"code": "3003", "message": "讀取評論失敗", "error": str(e)}), 500
         finally:
             cursor.close()
             conn.close()
@@ -140,7 +210,7 @@ def handle_private_review(user_id, place_id):
         comment = data.get('comment')
         cursor = conn.cursor()
         try:
-            # 使用 INSERT ... ON DUPLICATE KEY UPDATE 確保每人每地只有一筆
+            # 使用 ON DUPLICATE KEY UPDATE 確保每人每地只有一筆
             sql = """
                 INSERT INTO reviews (Users_id, Places_id, score, comment)
                 VALUES (%s, %s, %s, %s)
