@@ -4,20 +4,61 @@ from datetime import datetime
 
 place_bp = Blueprint('place_bp', __name__)
 
-# --- 1. 看到所有公共地點 (不分使用者) ---
-# Method: GET /api/places
 @place_bp.route('/places', methods=['GET'])
 def get_all_places():
+    # 取得 query string 參數
+    q = (request.args.get('q') or '').strip()
+    limit = request.args.get('limit', default=50, type=int)
+
+    # limit 安全限制，避免惡意一次拉爆 DB
+    if limit <= 0:
+        limit = 10
+    if limit > 200:
+        limit = 200
+
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
+
     try:
-        # 只顯示公共資訊
-        sql = "SELECT id AS place_id, name FROM places"
-        cursor.execute(sql)
+        # 若有關鍵字：用 LIKE 搜尋
+        if q:
+            sql = """
+                SELECT id AS place_id, name
+                FROM places
+                WHERE name LIKE %s
+                ORDER BY name ASC
+                LIMIT %s
+            """
+            like_kw = f"%{q}%"
+            cursor.execute(sql, (like_kw, limit))
+        else:
+            # 若沒帶關鍵字：回傳前 N 筆（你也可以改成直接回傳 []）
+            sql = """
+                SELECT id AS place_id, name
+                FROM places
+                ORDER BY id DESC
+                LIMIT %s
+            """
+            cursor.execute(sql, (limit,))
+
         places = cursor.fetchall()
-        return jsonify({"code": "200", "data": places}), 200
+
+        return jsonify({
+            "code": "200",
+            "data": places,
+            "meta": {
+                "q": q,
+                "limit": limit,
+                "count": len(places)
+            }
+        }), 200
+
     except Exception as e:
-        return jsonify({"code": "3001", "message": "取得景點失敗"}), 500
+        return jsonify({
+            "code": "3001",
+            "message": "取得景點失敗",
+            "error": str(e)
+        }), 500
     finally:
         cursor.close()
         conn.close()
@@ -192,4 +233,3 @@ def admin_delete_place(place_id):
     finally:
         cursor.close()
         conn.close()
-

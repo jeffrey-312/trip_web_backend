@@ -51,32 +51,46 @@ def add_event(trip_id):
         cursor.close()
         conn.close()
 
-# --- 2. 查看：取得該行程所有活動 (GET) ---
+# --- 2. 改寫後的 GET API (含類別統計) ---
 @event_bp.route('/trips/<int:trip_id>/events', methods=['GET'])
 def get_trip_events(trip_id):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        # 使用 LEFT JOIN 結合 expenses 表，取得 category 欄位
-        # 我們透過 e.id = ex.Events_id 進行精確關聯
-        sql = """
-            SELECT 
-                e.*, 
-                ex.category 
+        # A. 查詢所有活動與類別金額
+        sql_events = """
+            SELECT e.*, ex.category, ex.amount AS actual_expense
             FROM events e
             LEFT JOIN expenses ex ON e.id = ex.Events_id
             WHERE e.Trips_id = %s
             ORDER BY e.day_no ASC, e.start_time ASC
         """
-        cursor.execute(sql, (trip_id,))
+        cursor.execute(sql_events, (trip_id,))
         events = cursor.fetchall()
 
-        # 解決 timedelta 無法 JSON 序列化的問題
-        formatted_events = format_timedelta(events)
+        # B. 核心：加總「各類別」的花費 (對應 UI 下半部)
+        sql_category_sum = """
+            SELECT category, SUM(amount) AS total_amount
+            FROM expenses
+            WHERE Trips_id = %s
+            GROUP BY category
+        """
+        cursor.execute(sql_category_sum, (trip_id,))
+        category_summaries = cursor.fetchall()
 
-        return jsonify({"code": "200", "data": formatted_events}), 200
+        # C. 加總「全行程」總花費
+        total_spent = sum(item['total_amount'] for item in category_summaries)
+
+        return jsonify({
+            "code": "200",
+            "data": {
+                "total_spent": total_spent,
+                "category_summaries": category_summaries, # 這裡會回傳如 [{"category": "餐飲", "total_amount": 1200}, ...]
+                "events": format_timedelta(events)
+            }
+        }), 200
     except Exception as e:
-        return jsonify({"code": "2005", "message": "取得活動失敗", "error": str(e)}), 500
+        return jsonify({"code": "2005", "message": "取得資料失敗", "error": str(e)}), 500
     finally:
         cursor.close()
         conn.close()
