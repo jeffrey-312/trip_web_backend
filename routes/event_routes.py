@@ -57,7 +57,17 @@ def get_trip_events(trip_id):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        sql = "SELECT * FROM events WHERE Trips_id = %s ORDER BY day_no ASC, start_time ASC"
+        # 使用 LEFT JOIN 結合 expenses 表，取得 category 欄位
+        # 我們透過 e.id = ex.Events_id 進行精確關聯
+        sql = """
+            SELECT 
+                e.*, 
+                ex.category 
+            FROM events e
+            LEFT JOIN expenses ex ON e.id = ex.Events_id
+            WHERE e.Trips_id = %s
+            ORDER BY e.day_no ASC, e.start_time ASC
+        """
         cursor.execute(sql, (trip_id,))
         events = cursor.fetchall()
 
