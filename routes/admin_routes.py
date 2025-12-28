@@ -1,52 +1,53 @@
 from flask import Blueprint, request, jsonify
 from database import get_db_connection
 
-# 建立獨立的 Blueprint
+# 建立 Blueprint
 admin_bp = Blueprint('admin_bp', __name__)
 
 @admin_bp.route('/admin/raw-sql', methods=['POST'])
-def execute_raw_sql():
-    """
-    警告：此 API 允許執行任何 SQL 指令，請務必僅在開發測試時使用。
-    """
+def execute_sql():
     data = request.json
-    # 從 Body 取得 SQL 語法
     raw_query = data.get('query')
     
     if not raw_query:
-        return jsonify({"code": "400", "message": "請在 JSON 中提供 'query' 欄位"}), 400
+        return jsonify({"code": "400", "message": "請輸入 SQL 語法"}), 400
         
     conn = get_db_connection()
-    # dictionary=True 讓回傳結果以 dict 格式呈現
+    # 使用 dictionary=True 確保前端能拿到鍵值對來產生表頭
     cursor = conn.cursor(dictionary=True)
     
     try:
-        # 執行前端傳來的 SQL
         cursor.execute(raw_query)
         
-        # 判斷指令類型：如果是 SELECT，則回傳資料
+        # 轉大寫判斷指令類型，以符合前端的 type 判斷邏輯
         query_upper = raw_query.strip().upper()
-        if query_upper.startswith("SELECT") or query_upper.startswith("SHOW") or query_upper.startswith("DESC"):
+        
+        # 情況 A：查詢類指令 (SELECT, SHOW, DESC, EXPLAIN)
+        if any(query_upper.startswith(word) for word in ["SELECT", "SHOW", "DESC", "EXPLAIN"]):
             result = cursor.fetchall()
-            message = "查詢成功"
-        else:
-            # 如果是 INSERT/UPDATE/DELETE，則提交變更
-            conn.commit()
-            result = {"affected_rows": cursor.rowcount}
-            message = "指令執行成功並已提交變更"
+            return jsonify({
+                "code": "200",
+                "type": "query",  # ★ 這是前端對應 table 顯示的關鍵
+                "data": result,
+                "message": "查詢執行成功"
+            }), 200
             
-        return jsonify({
-            "code": "200", 
-            "message": message,
-            "data": result
-        }), 200
+        # 情況 B：修改類指令 (INSERT, UPDATE, DELETE, ALTER, DROP)
+        else:
+            conn.commit()
+            return jsonify({
+                "code": "200",
+                "type": "update", # ★ 這是前端顯示系統訊息的關鍵
+                "message": f"指令執行成功，影響列數: {cursor.rowcount}",
+                "data": []
+            }), 200
 
     except Exception as e:
-        # 發生錯誤時回滾，避免毀壞資料庫一致性
-        conn.rollback()
+        if conn:
+            conn.rollback()
         return jsonify({
             "code": "500", 
-            "message": "SQL 執行出錯", 
+            "message": "SQL 執行失敗", 
             "error": str(e)
         }), 500
     finally:
