@@ -4,6 +4,7 @@ from routes.user_routes import user_bp
 from routes.trip_routes import trip_bp
 from routes.event_routes import event_bp
 from routes.place_routes import place_bp
+from routes.admin_routes import admin_bp
 
 app = Flask(__name__)
 app.json.ensure_ascii = False 
@@ -14,6 +15,7 @@ app.register_blueprint(user_bp, url_prefix='/api/users')
 app.register_blueprint(trip_bp, url_prefix='/api/trips')
 app.register_blueprint(event_bp, url_prefix='/api')
 app.register_blueprint(place_bp, url_prefix='/api')
+app.register_blueprint(admin_bp, url_prefix='/api')
 
 @app.route('/')
 def index():
