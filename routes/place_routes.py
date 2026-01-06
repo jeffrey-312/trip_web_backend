@@ -4,43 +4,36 @@ from datetime import datetime
 
 place_bp = Blueprint('place_bp', __name__)
 
+# --- 1. 取得景點 (支援關鍵字、國家、城市搜尋) ---
 @place_bp.route('/places', methods=['GET'])
 def get_all_places():
-    # 取得 query string 參數
+    # 取得搜尋參數
     q = (request.args.get('q') or '').strip()
     limit = request.args.get('limit', default=50, type=int)
 
-    # limit 安全限制，避免惡意一次拉爆 DB
-    if limit <= 0:
-        limit = 10
-    if limit > 200:
-        limit = 200
+    # 安全限制
+    limit = max(1, min(limit, 200))
 
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
 
     try:
-        # 若有關鍵字：用 LIKE 搜尋
-        if q:
-            sql = """
-                SELECT id AS place_id, name
-                FROM places
-                WHERE name LIKE %s
-                ORDER BY name ASC
-                LIMIT %s
-            """
-            like_kw = f"%{q}%"
-            cursor.execute(sql, (like_kw, limit))
-        else:
-            # 若沒帶關鍵字：回傳前 N 筆（你也可以改成直接回傳 []）
-            sql = """
-                SELECT id AS place_id, name
-                FROM places
-                ORDER BY id DESC
-                LIMIT %s
-            """
-            cursor.execute(sql, (limit,))
+        # 1. 基礎 SQL 語法
+        sql = "SELECT id AS place_id, name, country, city FROM places"
+        params = []
 
+        # 2. 動態判斷：如果使用者有輸入關鍵字 q
+        if q:
+            # 同時比對名稱、國家、城市三個欄位
+            sql += " WHERE (name LIKE %s OR country LIKE %s OR city LIKE %s)"
+            like_kw = f"%{q}%"
+            params.extend([like_kw, like_kw, like_kw]) # 傳入三次關鍵字對應三個 LIKE
+
+        # 3. 排序與分頁
+        sql += " ORDER BY id DESC LIMIT %s"
+        params.append(limit)
+
+        cursor.execute(sql, tuple(params))
         places = cursor.fetchall()
 
         return jsonify({
@@ -54,16 +47,63 @@ def get_all_places():
         }), 200
 
     except Exception as e:
-        return jsonify({
-            "code": "3001",
-            "message": "取得景點失敗",
-            "error": str(e)
-        }), 500
+        return jsonify({"code": "3001", "message": "取得景點失敗", "error": str(e)}), 500
     finally:
         cursor.close()
         conn.close()
+# @place_bp.route('/places', methods=['GET'])
+# def get_all_places():
+#     # 取得搜尋參數
+#     q = (request.args.get('q') or '').strip()           # 名稱關鍵字
+#     country = (request.args.get('country') or '').strip() # 國家篩選
+#     city = (request.args.get('city') or '').strip()       # 城市篩選
+#     limit = request.args.get('limit', default=50, type=int)
 
-# --- 2. 加入/取消最愛 (切換狀態) ---
+#     # 安全限制
+#     limit = max(1, min(limit, 200))
+
+#     conn = get_db_connection()
+#     cursor = conn.cursor(dictionary=True)
+
+#     try:
+#         # 動態構建 SQL 語法
+#         sql = "SELECT id AS place_id, name, country, city FROM places WHERE 1=1"
+#         params = []
+
+#         if q:
+#             sql += " AND name LIKE %s"
+#             params.append(f"%{q}%")
+#         if country:
+#             sql += " AND country = %s"
+#             params.append(country)
+#         if city:
+#             sql += " AND city = %s"
+#             params.append(city)
+
+#         sql += " ORDER BY id DESC LIMIT %s"
+#         params.append(limit)
+
+#         cursor.execute(sql, tuple(params))
+#         places = cursor.fetchall()
+
+#         return jsonify({
+#             "code": "200",
+#             "data": places,
+#             "meta": {
+#                 "q": q,
+#                 "country": country,
+#                 "city": city,
+#                 "limit": limit,
+#                 "count": len(places)
+#             }
+#         }), 200
+#     except Exception as e:
+#         return jsonify({"code": "3001", "message": "取得景點失敗", "error": str(e)}), 500
+#     finally:
+#         cursor.close()
+#         conn.close()
+
+# --- 2. 加入/取消最愛 ---
 @place_bp.route('/favorites', methods=['POST'])
 def toggle_favorite():
     data = request.json
@@ -72,7 +112,6 @@ def toggle_favorite():
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # 檢查是否已收藏
         cursor.execute("SELECT * FROM favorites WHERE Users_id = %s AND Places_id = %s", (user_id, place_id))
         if cursor.fetchone():
             cursor.execute("DELETE FROM favorites WHERE Users_id = %s AND Places_id = %s", (user_id, place_id))
@@ -87,16 +126,15 @@ def toggle_favorite():
     finally:
         cursor.close()
         conn.close()
-        
-# --- 3. 看到我自己收藏的 Favorite 地點 ---
+
+# --- 3. 取得個人收藏清單 (回傳包含國家城市) ---
 @place_bp.route('/users/<int:user_id>/favorites', methods=['GET'])
 def get_my_favorites(user_id):
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     try:
-        # 透過 favorites 表 JOIN places
         sql = """
-            SELECT p.id AS place_id, p.name 
+            SELECT p.id AS place_id, p.name, p.country, p.city
             FROM favorites f
             JOIN places p ON f.Places_id = p.id
             WHERE f.Users_id = %s
@@ -110,73 +148,18 @@ def get_my_favorites(user_id):
         cursor.close()
         conn.close()
 
-
-# # --- 4. 點開地點看到我自己的評論 或 改寫評論 ---
-# @place_bp.route('/users/<int:user_id>/places/<int:place_id>/review', methods=['GET', 'POST'])
-# def handle_private_review(user_id, place_id):
-#     conn = get_db_connection()
-    
-#     # --- GET: 讀取評論 ---
-#     if request.method == 'GET':
-#         cursor = conn.cursor(dictionary=True)
-#         try:
-#             # 對應 reviews 表欄位: score, comment
-#             sql = "SELECT score, comment FROM reviews WHERE Users_id = %s AND Places_id = %s"
-#             cursor.execute(sql, (user_id, place_id))
-#             review = cursor.fetchone()
-#             if not review:
-#                 review = {"score": 0, "comment": ""}
-                
-            
-#             return jsonify({"code": "200", "data": review}), 200
-#         except Exception as e:
-#             return jsonify({"code": "3003", "message": "讀取評論失敗"}), 500
-#         finally:
-#             cursor.close()
-#             conn.close()
-
-#     # --- POST: 改寫(更新或新增) 評論 ---
-#     if request.method == 'POST':
-#         data = request.json
-#         score = data.get('score')
-#         comment = data.get('comment')
-#         cursor = conn.cursor()
-#         try:
-#             # 使用 INSERT ... ON DUPLICATE KEY UPDATE 確保每人每地只有一筆
-#             sql = """
-#                 INSERT INTO reviews (Users_id, Places_id, score, comment)
-#                 VALUES (%s, %s, %s, %s)
-#                 ON DUPLICATE KEY UPDATE score=%s, comment=%s, created_at=CURRENT_TIMESTAMP
-#             """
-#             cursor.execute(sql, (user_id, place_id, score, comment, score, comment))
-#             conn.commit()
-#             return jsonify({"code": "200", "message": "個人評論已改寫成功"}), 200
-#         except Exception as e:
-#             conn.rollback()
-#             return jsonify({"code": "3004", "message": "改寫評論失敗", "error": str(e)}), 500
-#         finally:
-#             cursor.close()
-#             conn.close()
-
-# --- 4. 點開地點看到我自己的評論與全站平均分 ---
+# --- 4. 讀取/改寫個人評論與全站平均分 ---
 @place_bp.route('/users/<int:user_id>/places/<int:place_id>/review', methods=['GET', 'POST'])
 def handle_private_review(user_id, place_id):
     conn = get_db_connection()
     
-    # --- GET: 讀取個人評論與平均分數 ---
     if request.method == 'GET':
         cursor = conn.cursor(dictionary=True)
         try:
-            # 1. 取得該使用者的個人評論
             sql_user = "SELECT score, comment FROM reviews WHERE Users_id = %s AND Places_id = %s"
             cursor.execute(sql_user, (user_id, place_id))
-            user_review = cursor.fetchone()
-            
-            # 若無評論則給予預設值
-            if not user_review:
-                user_review = {"score": 0, "comment": ""}
+            user_review = cursor.fetchone() or {"score": 0, "comment": ""}
 
-            # 2. 計算該地點的平均分數與總評論數
             sql_avg = """
                 SELECT 
                     ROUND(AVG(score), 1) AS average_score, 
@@ -203,14 +186,12 @@ def handle_private_review(user_id, place_id):
             cursor.close()
             conn.close()
 
-    # --- POST: 改寫(更新或新增) 評論 ---
     if request.method == 'POST':
         data = request.json
         score = data.get('score')
         comment = data.get('comment')
         cursor = conn.cursor()
         try:
-            # 使用 ON DUPLICATE KEY UPDATE 確保每人每地只有一筆
             sql = """
                 INSERT INTO reviews (Users_id, Places_id, score, comment)
                 VALUES (%s, %s, %s, %s)
@@ -225,8 +206,8 @@ def handle_private_review(user_id, place_id):
         finally:
             cursor.close()
             conn.close()
-            
-# --- 5. 使用者：刪除個人評論與評分 ---
+
+# --- 5. 刪除個人評論 ---
 @place_bp.route('/users/<int:user_id>/reviews/<int:place_id>', methods=['DELETE'])
 def delete_user_review(user_id, place_id):
     conn = get_db_connection()
@@ -242,12 +223,13 @@ def delete_user_review(user_id, place_id):
         cursor.close()
         conn.close()
 
-# --- 6. 管理員：新增公共景點到地點庫 ---
-# Method: POST /api/admin/places
+# --- 6. 管理員：新增公共景點 (含國家、城市) ---
 @place_bp.route('/admin/places', methods=['POST'])
 def admin_add_place():
     data = request.json
     name = data.get('name')
+    country = data.get('country')
+    city = data.get('city')
     
     if not name:
         return jsonify({"code": "4003", "message": "景點名稱不能為空"}), 400
@@ -255,14 +237,13 @@ def admin_add_place():
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # 1. 檢查景點是否已存在
         cursor.execute("SELECT id FROM places WHERE name = %s", (name,))
         if cursor.fetchone():
             return jsonify({"code": "4004", "message": "此景點已存在於公共庫中"}), 400
 
-        # 2. 插入新景點 (僅包含公共資訊，不含 score 與 comment)
-        sql = "INSERT INTO places (name) VALUES (%s)"
-        cursor.execute(sql, (name,))
+        # 修改插入語法以支援 country 與 city
+        sql = "INSERT INTO places (name, country, city) VALUES (%s, %s, %s)"
+        cursor.execute(sql, (name, country, city))
         
         conn.commit()
         return jsonify({
@@ -270,31 +251,23 @@ def admin_add_place():
             "message": f"成功新增公共景點: {name}",
             "place_id": cursor.lastrowid
         }), 200
-
     except Exception as e:
         conn.rollback()
-        return jsonify({
-            "code": "4005",
-            "message": "系統錯誤，新增失敗",
-            "error": str(e)
-        }), 500
+        return jsonify({"code": "4005", "message": "系統錯誤，新增失敗", "error": str(e)}), 500
     finally:
         cursor.close()
         conn.close()
-        
+
 # --- 7. 管理員：從公共庫刪除景點 ---
 @place_bp.route('/admin/places/<int:place_id>', methods=['DELETE'])
 def admin_delete_place(place_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # 執行刪除，CASCADE 會自動處理關聯表
         sql = "DELETE FROM places WHERE id = %s"
         cursor.execute(sql, (place_id,))
-        
         if cursor.rowcount == 0:
             return jsonify({"code": "4006", "message": "找不到該景點，刪除失敗"}), 404
-
         conn.commit()
         return jsonify({"code": "200", "message": "已將景點從公共庫徹底移除"}), 200
     except Exception as e:
